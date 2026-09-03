@@ -1,0 +1,23 @@
+# Build output
+target/
+*.class
+
+# Persisted application state (runtime-generated, not part of the repo)
+hotel-state.txt
+backup
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.settings/
+.classpath
+.project
+.factorypath
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
