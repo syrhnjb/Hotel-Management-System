@@ -1,5 +1,7 @@
 package com.abhiram.hotel.cli;
 
+import java.time.LocalDate;
+import java.time.format.DateTimeParseException;
 import java.util.NoSuchElementException;
 import java.util.Scanner;
 
@@ -40,6 +42,18 @@ final class ConsoleIO {
                 return Integer.parseInt(line.trim());
             } catch (NumberFormatException e) {
                 println("Please enter a whole number.");
+            }
+        }
+    }
+
+    /** Reads a date in ISO {@code yyyy-MM-dd} format, re-prompting on unparseable input. */
+    LocalDate readDate(String prompt) {
+        while (true) {
+            String line = readLine(prompt);
+            try {
+                return LocalDate.parse(line.trim());
+            } catch (DateTimeParseException e) {
+                println("Please enter a date in yyyy-MM-dd format, e.g. 2026-09-16.");
             }
         }
     }

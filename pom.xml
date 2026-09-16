@@ -77,7 +77,7 @@
             </plugin>
 
             <!-- Test coverage reporting. A single, proportionate quality-tooling choice for a
-                 project this size -- see docs/design-decisions.md for why Checkstyle/PMD/SpotBugs
+                 project this size. See docs/design-decisions.md for why Checkstyle/PMD/SpotBugs
                  were left out rather than bolted on for appearance. -->
             <plugin>
                 <groupId>org.jacoco</groupId>

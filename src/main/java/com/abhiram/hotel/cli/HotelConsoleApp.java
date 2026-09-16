@@ -13,6 +13,7 @@ import com.abhiram.hotel.exception.ValidationException;
 import com.abhiram.hotel.service.BookingService;
 import com.abhiram.hotel.service.FoodOrderService;
 import com.abhiram.hotel.service.RoomService;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.NoSuchElementException;
@@ -64,7 +65,8 @@ public final class HotelConsoleApp {
         io.println("3. Book a room");
         io.println("4. Order food");
         io.println("5. Checkout");
-        io.println("6. Exit");
+        io.println("6. View booking history");
+        io.println("7. Exit");
     }
 
     /** @return {@code false} if the user chose to exit. */
@@ -75,10 +77,11 @@ public final class HotelConsoleApp {
             case 3 -> bookRoom();
             case 4 -> orderFood();
             case 5 -> checkout();
-            case 6 -> {
+            case 6 -> viewBookingHistory();
+            case 7 -> {
                 return false;
             }
-            default -> io.println("Please choose an option between 1 and 6.");
+            default -> io.println("Please choose an option between 1 and 7.");
         }
         return true;
     }
@@ -93,14 +96,24 @@ public final class HotelConsoleApp {
 
     private void displayAvailability() {
         RoomType type = chooseRoomType();
-        io.println("Rooms available: " + roomService.countAvailable(type));
+        LocalDate checkIn = io.readDate("Check-in date (yyyy-mm-dd): ");
+        LocalDate checkOut = io.readDate("Check-out date (yyyy-mm-dd): ");
+        List<Room> available = bookingService.availableRoomsOfType(type, checkIn, checkOut);
+        io.println("Rooms available: " + available.size());
+        if (!available.isEmpty()) {
+            io.print("Room numbers: ");
+            io.println(available.stream().map(r -> String.valueOf(r.roomNumber()))
+                    .reduce((a, b) -> a + ", " + b).orElse(""));
+        }
     }
 
     private void bookRoom() {
         RoomType type = chooseRoomType();
-        List<Room> available = roomService.availableRoomsOfType(type);
+        LocalDate checkIn = io.readDate("Check-in date (yyyy-mm-dd): ");
+        LocalDate checkOut = io.readDate("Check-out date (yyyy-mm-dd): ");
+        List<Room> available = bookingService.availableRoomsOfType(type, checkIn, checkOut);
         if (available.isEmpty()) {
-            io.println("No rooms of this type are currently available.");
+            io.println("No rooms of this type are available for that stay.");
             return;
         }
         io.print("Available room numbers: ");
@@ -117,8 +130,9 @@ public final class HotelConsoleApp {
             guests.add(new Guest(name, ContactNumber.of(contact), gender));
         }
 
-        Booking booking = bookingService.bookRoom(roomNumber, guests);
-        io.println("Room " + booking.roomNumber() + " booked successfully.");
+        Booking booking = bookingService.bookRoom(roomNumber, guests, checkIn, checkOut);
+        io.println("Room " + booking.roomNumber() + " booked for "
+                + booking.nights() + " night(s) from " + booking.checkInDate() + " to " + booking.checkOutDate() + ".");
     }
 
     private void orderFood() {
@@ -145,7 +159,7 @@ public final class HotelConsoleApp {
 
     private void checkout() {
         int roomNumber = io.readInt("Room number: ");
-        Booking booking = bookingService.getActiveBooking(roomNumber);
+        Booking booking = bookingService.getInHouseBooking(roomNumber);
         io.println("Room used by " + booking.primaryGuest().name());
         if (!io.readYesNo("Proceed with checkout? (y/n): ")) {
             return;
@@ -154,9 +168,26 @@ public final class HotelConsoleApp {
         printInvoice(invoice);
     }
 
+    private void viewBookingHistory() {
+        List<Invoice> history = bookingService.bookingHistory();
+        if (history.isEmpty()) {
+            io.println("\nNo past bookings on record yet.");
+            return;
+        }
+        io.println("\n******* Booking history *******");
+        for (Invoice invoice : history) {
+            io.println("- Room " + invoice.roomNumber() + " (" + invoice.roomType() + "), guest "
+                    + invoice.guestName() + ", " + invoice.checkInDate() + " to " + invoice.checkOutDate()
+                    + " (" + invoice.nights() + " night(s)) -- " + invoice.total());
+        }
+    }
+
     private void printInvoice(Invoice invoice) {
         io.println("\n******* Bill *******");
         io.println("Room " + invoice.roomNumber() + " (" + invoice.roomType() + ")");
+        io.println("Guest: " + invoice.guestName());
+        io.println("Stay: " + invoice.checkInDate() + " to " + invoice.checkOutDate()
+                + " (" + invoice.nights() + " night(s))");
         io.println("Room charge: " + invoice.roomCharge());
         if (!invoice.foodLines().isEmpty()) {
             io.println("\nFood charges:");

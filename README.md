@@ -15,13 +15,19 @@ architecture, a real domain model, automated tests, and safe persistence.
 
 - **Room management** — 60 rooms across 4 categories (Luxury/Deluxe × Single/Double), with
   live availability tracking.
-- **Booking** — books a room for the correct number of guests for its type; rejects booking an
-  already-occupied room, a non-existent room, or the wrong guest count.
-- **Food ordering** — a 4-item menu, added to a room's active booking; rejects zero/negative/
+- **Booking** — books a room for the correct number of guests for its type over a date range
+  (one or more nights); rejects an already-occupied room, a non-existent room, the wrong guest
+  count, overlapping dates, or a check-in in the past.
+- **Advance reservations** — a room can hold several non-overlapping future bookings; each is
+  `RESERVED` until check-in and `ACTIVE` once the guest is in house.
+- **Prorated billing** — room charges are `daily rate × nights` (computed with `BigDecimal`,
+  never `float` or `double`).
+- **Food ordering** — a 4-item menu, added to a room's in-house booking; rejects zero/negative/
   unreasonably large quantities and orders against unbooked rooms.
-- **Billing** — deterministic room + food charge calculation using `BigDecimal`, never `float`
-  or `double`.
-- **Persistence** — active bookings survive an application restart, via a safe plain-text file
+- **Billing** — deterministic room + food charge calculation per night stayed.
+- **Booking history** — every checked-out invoice is recorded in an append-only history file and
+  can be listed from the menu.
+- **Persistence** — open bookings survive an application restart, via a safe plain-text file
   format (not Java's native object serialization — see [Security](#security)).
 
 ## Architecture
@@ -81,7 +87,7 @@ docs/
 | `Room` | A physical room: number, type, `AVAILABLE`/`OCCUPIED` status |
 | `RoomType` | Enum: `LUXURY_DOUBLE`, `DELUXE_DOUBLE`, `LUXURY_SINGLE`, `DELUXE_SINGLE` — carries number range, occupancy, daily rate, amenities |
 | `Guest` | Name, `ContactNumber`, gender |
-| `Booking` | A room + its guest(s) + `FoodOrder`, from check-in to checkout |
+| `Booking` | A room + its guest(s) + `FoodOrder` + check-in/check-out dates, from `RESERVED`/`ACTIVE` to `CHECKED_OUT` |
 | `MenuItem` | Enum: `SANDWICH`, `PASTA`, `NOODLES`, `COKE`, each with a unit price |
 | `FoodOrder` / `FoodOrderLine` | Line items ordered against a booking |
 | `Invoice` | The computed room + food charges for a checked-out booking |
@@ -109,7 +115,7 @@ mvn clean compile
 mvn clean test
 ```
 
-Runs the full JUnit 5 suite (46 tests) and generates a JaCoCo coverage report at
+Runs the full JUnit 5 suite (62 tests) and generates a JaCoCo coverage report at
 `target/site/jacoco/index.html`.
 
 ## Run
@@ -127,24 +133,32 @@ mvn compile exec:java -Dexec.mainClass=com.abhiram.hotel.App
 
 ## Configuration
 
-The only externally-configurable setting is where booking state is persisted, via the
-`HOTEL_STORAGE_FILE` environment variable:
+The externally-configurable settings are the two file locations, via the `HOTEL_STORAGE_FILE` and
+`HOTEL_HISTORY_FILE` environment variables:
 
 ```bash
-HOTEL_STORAGE_FILE=/tmp/my-hotel-state.txt java -jar target/hotel-management-system.jar
+HOTEL_STORAGE_FILE=/tmp/my-hotel-state.txt \
+HOTEL_HISTORY_FILE=/tmp/my-hotel-history.txt \
+java -jar target/hotel-management-system.jar
 ```
 
-Defaults to `hotel-state.txt` in the working directory. Room counts, prices, and the food menu
-are stable business data, not configuration — they live in `RoomType` and `MenuItem`.
+They default to `hotel-state.txt` and `hotel-history.txt` in the working directory. Room counts,
+prices, and the food menu are stable business data, not configuration — they live in `RoomType`
+and `MenuItem`.
 
 ## Persistence
 
-Active (not yet checked-out) bookings are saved to a plain-text file when the application exits
-and restored on the next startup. Each line is one booking: room number, guest details, and food
-order lines, pipe/semicolon/comma-delimited. See
-[`docs/design-decisions.md`](docs/design-decisions.md#custom-plain-text-format-instead-of-java-serialization)
-for why this replaces the original's `ObjectOutputStream`-based approach, and its documented
-limitations (booking history/past invoices are not retained — only active bookings).
+Two plain-text files are read and written on application exit and startup:
+
+- **`hotel-state.txt`** — open bookings (reserved or in-house, not yet checked out). Each line is
+  one booking: room number, check-in/check-out dates, guest details, and food order lines,
+  pipe/semicolon/comma-delimited. A stay whose check-out date has passed without a checkout is
+  dropped on load.
+- **`hotel-history.txt`** — invoices of checked-out bookings. Append-only, so past invoices are
+  never rewritten or lost.
+
+See [`docs/design-decisions.md`](docs/design-decisions.md#custom-plain-text-format-instead-of-java-serialization)
+for why this replaces the original's `ObjectOutputStream`-based approach.
 
 ## Example usage
 
@@ -154,7 +168,8 @@ limitations (booking history/past invoices are not retained — only active book
 3. Book a room
 4. Order food
 5. Checkout
-6. Exit
+6. View booking history
+7. Exit
 Enter your choice: 3
 
 Choose room type:
@@ -163,31 +178,36 @@ Choose room type:
 3. Luxury Single Room
 4. Deluxe Single Room
 Enter choice: 3
+Check-in date (yyyy-mm-dd): 2026-09-16
+Check-out date (yyyy-mm-dd): 2026-09-18
 Available room numbers: 31, 32, 33, 34, 35, 36, 37, 38, 39, 40
 Enter room number: 31
 Guest name: Asha
 Contact number: 9876543210
 Gender: F
-Room 31 booked successfully.
+Room 31 booked for 2 night(s) from 2026-09-16 to 2026-09-18.
 ```
 
 ### Sample workflow
 
-1. Book Luxury Single Room #31 for "Asha".
+1. Book Luxury Single Room #31 for "Asha" for 2 nights (2026-09-16 → 2026-09-18).
 2. Order food: 2× Pasta.
 3. Checkout room 31 →
 
    ```
    ******* Bill *******
    Room 31 (LUXURY_SINGLE)
-   Room charge: ₹2200.00
+   Guest: Asha
+   Stay: 2026-09-16 to 2026-09-18 (2 night(s))
+   Room charge: ₹4400.00
 
    Food charges:
    Item        Qty       Price
    Pasta       2         ₹120.00
 
-   Total: ₹2320.00
+   Total: ₹4520.00
    ```
+4. View booking history → lists the invoice above and every other past checkout.
 
 ## Error handling
 
@@ -211,19 +231,23 @@ for why these are unchecked exceptions.
 
 ## Testing strategy
 
-46 JUnit 5 tests, focused on business behavior rather than trivial getters/setters:
+62 JUnit 5 tests, focused on business behavior rather than trivial getters/setters:
 
-- `BookingServiceTest` — booking, double-booking prevention, invalid room/guest-count rejection,
-  checkout, double-checkout rejection, and that a rejected booking leaves no partial state.
+- `BookingServiceTest` — booking, double-booking/overlap prevention across date ranges, invalid
+  room/guest-count rejection, past-date rejection, advance (non-overlapping future)
+  reservations, checkout, double-checkout rejection, that a rejected booking leaves no partial
+  state, and that checkout records the invoice in history.
 - `FoodOrderServiceTest` — valid orders, zero/negative/excessive quantity rejection, ordering
   against an unbooked room.
-- `BillingServiceTest` — room-only, room+food, multiple food lines, zero food orders, and
-  single-unit boundary pricing — as pure arithmetic against a `Booking`, with no I/O involved.
-- `RoomServiceTest`, `RoomTypeTest`, `BookingTest`, `MoneyTest` — domain invariants and room-type
-  boundary resolution.
+- `BillingServiceTest` — single-night and multi-night (prorated) room charges, room+food, multiple
+  food lines, zero food orders, and single-unit boundary pricing — as pure arithmetic against a
+  `Booking`, with no I/O involved.
+- `RoomServiceTest`, `RoomTypeTest`, `BookingTest`, `MoneyTest` — domain invariants, date-range
+  validation, status derivation (reserved/in-house), and room-type boundary resolution.
 - `ValidatorTest`, `ContactNumberTest` — input validation edge cases.
-- `FileHotelStateRepositoryTest` — persistence round-trips, including bookings with no food
-  orders and loading from a missing file.
+- `FileHotelStateRepositoryTest` — open-booking round-trips including check-in/check-out dates,
+  reserved bookings, bookings with no food orders, and loading from a missing file.
+- `FileInvoiceHistoryRepositoryTest` — invoice round-trips and append-only behaviour.
 
 ## CI/CD
 
@@ -233,28 +257,32 @@ The build fails if any test fails. No deployment step exists — none is claimed
 
 ## Known limitations
 
-- **Single-day stays only.** There is no check-in/check-out date range or multi-night pricing —
-  matching the original application's scope. See
-  [`docs/design-decisions.md`](docs/design-decisions.md#multi-day-stays-are-not-implemented).
-- **No booking history.** Only active bookings are persisted; once a booking is checked out, its
-  invoice is shown once and not retained.
+- **Date-bound availability, single process.** The room's occupied flag only reflects whether a
+  guest is in house *today*; a booking matures from `RESERVED` to `ACTIVE` when the application
+  next loads persisted state, not mid-run while the app stays open.
+- **Stale stays are dropped, not billed.** If a guest's check-out passes without a checkout, the
+  booking is silently dropped on the next startup rather than auto-billed.
 - **Single-user, single-process.** The in-memory repositories are not thread-safe; this is a
   single-threaded console application by design (see
   [`docs/design-decisions.md`](docs/design-decisions.md#no-authentication-no-database-no-microservices-no-docker)).
 - **No authentication.** Not required for a local console tool; would need a real design pass if
   this became a networked/multi-user application.
-- **In-sandbox verification note:** during development, `mvn clean test` itself could not be run
-  in the isolated build sandbox used to prepare this change (no access to Maven Central). The
-  exact same source and test suite were compiled and executed instead with a local `javac`/JUnit
-  toolchain — all 46 tests pass. `mvn clean test` is expected to work normally in any environment
-  with standard internet access; if you hit an issue running it, please open an issue.
+- **In-sandbox verification note:** during the original modernization, `mvn clean test` itself
+  could not be run in the isolated build sandbox used to prepare that change (no access to Maven
+  Central). The exact same source and test suite were compiled and executed instead with a local
+  `javac`/JUnit toolchain — all tests passed. The project now verifiably builds here with
+  `mvn clean verify` (62 tests, all passing).
 
 ## Future improvements
 
-- Multi-day reservations with date-range validation and prorated billing.
-- Booking/invoice history retained across checkouts.
 - A JDBC- or JPA-backed `RoomRepository`/`BookingRepository` implementation, if the project ever
   needs concurrent/multi-user access (the interfaces are already in place for this).
+- Reporting and analytics over the invoice history (occupancy rates, revenue per room type, food
+  sales) now that history is retained.
+- Checkin/checkout signalling so a running application marks a reservation `ACTIVE` when its
+  check-in date arrives, without needing a restart.
+- Interrupted-stay handling (e.g. dropping a stale stay with a logged warning rather than
+  silently).
 - Checkstyle/PMD/SpotBugs, if the project grows enough contributors to need enforced style
   consistency (see [`docs/design-decisions.md`](docs/design-decisions.md#jacoco-only-not-checkstylepmdspotbugs)).
 

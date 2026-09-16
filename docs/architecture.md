@@ -7,7 +7,8 @@ flowchart TD
     CLI[cli.HotelConsoleApp] --> Service[service layer]
     Service --> Domain[domain layer]
     Service --> Repository[repository layer]
-    Repository --> Storage[(hotel-state.txt)]
+    Repository --> Open[(hotel-state.txt)]
+    Repository --> History[(hotel-history.txt)]
     App[App - composition root] --> CLI
     App --> Service
     App --> Repository
@@ -23,14 +24,17 @@ flowchart TD
   value objects `Money` and `ContactNumber`. Domain objects validate their own invariants in
   their constructors (e.g. a `Booking` cannot be built with the wrong number of guests for its
   room type), so invalid domain objects cannot exist.
-- **`repository`** — data access. `RoomRepository`/`BookingRepository` are the in-memory source
-  of truth while the app runs. `HotelStateRepository` is the one persistence boundary, backed by
-  `FileHotelStateRepository` (see [design-decisions.md](design-decisions.md) for why it's a
-  custom plain-text format rather than Java serialization).
+- **`repository`** — data access. `RoomRepository`/`BookingRepository` are the in-memory source of
+  truth while the app runs. `HotelStateRepository` (backed by `FileHotelStateRepository`) is the
+  open-bookings persistence boundary, and `InvoiceHistoryRepository` (backed by
+  `FileInvoiceHistoryRepository`) is the append-only checked-out-invoice ledger — both
+  custom plain-text formats (see [design-decisions.md](design-decisions.md) for why not Java
+  serialization).
 - **`exception`** — a small hierarchy rooted at `HotelDomainException`, one subtype per class of
   business-rule violation.
 - **`validation`** — small stateless helpers shared by the service and CLI layers.
-- **`config`** — `HotelConfig`, the only externally-configurable setting (the storage file path).
+- **`config`** — `HotelConfig`, the externally-configurable settings (open-bookings and history
+  file paths).
 - **`App`** — the composition root. Wires repositories to services to the CLI, restores persisted
   state at startup, and saves it back on exit. Contains no business logic.
 
@@ -43,19 +47,21 @@ sequenceDiagram
     participant RR as RoomRepository
     participant BR as BookingRepository
 
-    CLI->>BS: bookRoom(roomNumber, guests)
+    CLI->>BS: bookRoom(roomNumber, guests, checkIn, checkOut)
     BS->>RR: findByRoomNumber(roomNumber)
     RR-->>BS: Room
-    BS->>BS: validate availability
-    BS->>BS: new Booking(...) (validates guest count)
-    BS->>RR: room.occupy()
+    BS->>BR: hasOverlap(roomNumber, checkIn, checkOut)
+    BR-->>BS: boolean
+    BS->>BS: new Booking(...) (validates dates + guest count)
+    BS->>RR: room.occupy() (only if checking in today)
     BS->>BR: save(booking)
     BS-->>CLI: Booking
 ```
 
-A booking's guest-count validation happens in the `Booking` constructor **before** the room is
-marked occupied, so a rejected booking (e.g. wrong guest count) never leaves the room in a
-half-occupied state.
+A booking's date-range and guest-count validation happen in the `Booking` constructor **before**
+the room is mutated, so a rejected booking (e.g. wrong guest count or overlapping dates) never
+leaves the room in a half-occupied state. A future reservation is `RESERVED` and does not mark the
+room occupied until its check-in date arrives.
 
 ## Data flow: checkout
 
@@ -66,20 +72,23 @@ sequenceDiagram
     participant Bill as BillingService
     participant BR as BookingRepository
     participant RR as RoomRepository
+    participant Hist as InvoiceHistoryRepository
 
     CLI->>BS: checkout(roomNumber)
-    BS->>BR: findActiveByRoomNumber(roomNumber)
+    BS->>BR: findInHouseByRoomNumber(roomNumber)
     BR-->>BS: Booking
     BS->>Bill: generateInvoice(booking)
     Bill-->>BS: Invoice
     BS->>BS: booking.markCheckedOut()
-    BS->>BR: remove(roomNumber)
+    BS->>BR: remove(booking.bookingId())
     BS->>RR: room.release()
+    BS->>Hist: save(invoice)
     BS-->>CLI: Invoice
 ```
 
-The invoice is computed **before** the booking is marked checked out and the room released, so a
-failure while computing the bill cannot leave the room released with no invoice ever produced.
+The invoice is computed **before** the booking is marked checked out and the room released, and is
+persisted to invoice history as part of the same operation, so a failure while computing the bill
+cannot leave the room released with no invoice ever produced.
 
 ## Room numbering
 

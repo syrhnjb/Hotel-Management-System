@@ -31,12 +31,21 @@ service layer — but building one now would be complexity for its own sake.
 The original app persisted its entire object graph with `ObjectOutputStream`/`ObjectInputStream`.
 Deserializing untrusted or corrupted data with Java's native mechanism is a well-documented attack
 vector (gadget-chain remote code execution) — treating it as production-safe persistence would be
-exactly the kind of unaudited risk Phase 9/16 ask us to catch. `FileHotelStateRepository` instead
-writes one delimited plain-text line per active booking and parses it back field by field. A
-tampered or corrupted file can, at worst, produce a `PersistenceException` — never arbitrary code
-execution. The trade-off is that it's a bespoke format rather than a standard one (JSON would also
-have worked, but pulling in a JSON library for four fields per line felt disproportionate — see
-the "no dependencies" note below).
+exactly the kind of unaudited risk Phase 9/16 ask us to catch. `FileHotelStateRepository` and
+`FileInvoiceHistoryRepository` instead write one delimited plain-text line per booking/invoice and
+parse each back field by field. A tampered or corrupted file can, at worst, produce a
+`PersistenceException` — never arbitrary code execution. The trade-off is that it's a bespoke
+format rather than a standard one (JSON would also have worked, but pulling in a JSON library for
+a handful of fields per line felt disproportionate — see the "no dependencies" note below).
+
+## Append-only invoice history instead of a mutable snapshot
+
+Checked-out bookings move out of the open-bookings file into a separate, *append-only* history
+file. History is written only ever by appending, so past invoices are never rewritten or lost —
+an audit log rather than a mutable snapshot — and the open-bookings file stays small (matching its
+actual job: "which rooms are occupied/coming up"). The two files have distinct shapes and purposes
+(open bookings are mutable state; history is an immutable ledger), which is why they are separate
+repositories behind two interfaces that the service layer already depends on.
 
 ## Zero runtime dependencies
 
@@ -63,12 +72,22 @@ one person, adding three more plugins to configure and keep green would be tooli
 looking thorough rather than tooling that changes how the code gets written. They're easy to add
 later (`docs/architecture.md` doesn't need to change to accommodate them).
 
-## Multi-day stays are not implemented
+## Multi-day reservations are implemented, not just shaped for
 
 The original application only ever charged one day's room rate per booking, with no check-in/
-check-out *dates* at all — `checkout()` just ends the stay whenever it's called. This rebuild
-preserves that scope rather than pretending multi-day reservations exist: `Booking` records a
-`checkInTime` (useful for the persisted-state restoration message and for a future feature) but
-billing is still a flat one-stay room charge. Implementing real multi-day pricing properly (date
-ranges, overlapping-booking checks, prorated billing) is a large enough feature that it belongs in
-its own change with its own tests, not folded silently into a "modernization."
+check-out *dates* at all — `checkout()` just ended the stay whenever it was called. Multi-day
+stays are now a first-class concept:
+
+- `Booking` carries `checkInDate`/`checkOutDate` (half-open: check-in night inclusive, check-out
+  day exclusive) and derives its status from them — `RESERVED` before check-in, `ACTIVE` while in
+  house, `CHECKED_OUT` after. Persisted bookings restore into the right status automatically.
+- A room can hold several *non-overlapping* bookings over time (e.g. back-to-back reservations),
+  so availability is a date-range query against `BookingRepository`, not a single mutable occupied
+  flag. The flag survives only as a "guest in house today" convenience for the room inventory.
+- Billing is prorated: `daily rate × nights`, computed in `Money`/`BigDecimal`.
+
+Deliberate, documented boundaries rather than over-modeling: check-in is not a separate
+*event* (a reservation becomes `ACTIVE` when the app next loads persisted state, not mid-run),
+and a stay whose check-out passes without a checkout is dropped on load rather than auto-billed.
+Both are explicit in the README's known limitations; neither is worth a lifecycle engine for a
+single-user console application.

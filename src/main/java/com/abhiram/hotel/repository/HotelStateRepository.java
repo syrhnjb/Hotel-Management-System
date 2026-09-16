@@ -4,7 +4,8 @@ import com.abhiram.hotel.domain.Booking;
 import java.util.List;
 
 /**
- * Persists and restores the hotel's active bookings between application runs.
+ * Persists and restores the hotel's open bookings (reserved or in-house) between application
+ * runs.
  *
  * <p>This is the one boundary in the application that touches disk I/O for durability, kept
  * separate from {@link BookingRepository} (the in-memory source of truth while the app runs) so
@@ -13,7 +14,7 @@ import java.util.List;
  */
 public interface HotelStateRepository {
 
-    void saveActiveBookings(List<Booking> activeBookings);
+    void saveOpenBookings(List<Booking> openBookings);
 
-    List<Booking> loadActiveBookings();
+    List<Booking> loadOpenBookings();
 }

@@ -13,6 +13,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -24,17 +25,16 @@ import java.util.List;
  * {@code ObjectOutputStream}/{@code ObjectInputStream}. Native Java deserialization of
  * data from disk is a well-known security risk (a corrupted or tampered file can trigger
  * arbitrary code execution via gadget chains in the classpath), so this implementation instead
- * writes one plain-text line per active booking and parses it back field by field. A malformed
+ * writes one plain-text line per open booking and parses it back field by field. A malformed
  * or tampered file can, at worst, cause a {@link PersistenceException}--never arbitrary
  * deserialization.
  *
  * <h2>Limitations</h2>
  * <ul>
- *   <li>Only <em>active</em> (not yet checked-out) bookings are persisted; historical/checked-out
- *       bookings and past invoices are not retained. That matches the original application's
- *       scope, which had no booking history either.</li>
+ *   <li>Only <em>open</em> bookings (reserved or in-house, not yet checked out) are persisted;
+ *       checked-out stays live in the invoice history repository instead.</li>
  *   <li>Guest names and menu item names must not contain the field/line delimiters ({@code |},
- *       {@code ;}, {@code ,}, {@code :}, or a newline); {@link #saveActiveBookings} rejects such
+ *       {@code ;}, {@code ,}, {@code :}, or a newline); {@link #saveOpenBookings} rejects such
  *       input rather than silently corrupting the file.</li>
  *   <li>Writes are synchronous and whole-file (read-modify-write), which is appropriate for a
  *       single-user console application but would not scale to concurrent writers.</li>
@@ -55,10 +55,10 @@ public final class FileHotelStateRepository implements HotelStateRepository {
     }
 
     @Override
-    public void saveActiveBookings(List<Booking> activeBookings) {
+    public void saveOpenBookings(List<Booking> openBookings) {
         try {
             List<String> lines = new ArrayList<>();
-            for (Booking booking : activeBookings) {
+            for (Booking booking : openBookings) {
                 lines.add(toLine(booking));
             }
             Path parent = storageFile.toAbsolutePath().getParent();
@@ -77,7 +77,7 @@ public final class FileHotelStateRepository implements HotelStateRepository {
     }
 
     @Override
-    public List<Booking> loadActiveBookings() {
+    public List<Booking> loadOpenBookings() {
         List<Booking> bookings = new ArrayList<>();
         if (!Files.exists(storageFile)) {
             return bookings;
@@ -88,7 +88,10 @@ public final class FileHotelStateRepository implements HotelStateRepository {
                 if (line.isBlank()) {
                     continue;
                 }
-                bookings.add(fromLine(line));
+                Booking booking = fromLine(line);
+                if (booking.isOpen()) {
+                    bookings.add(booking);
+                }
             }
         } catch (IOException e) {
             throw new PersistenceException("Failed to load hotel state from " + storageFile, e);
@@ -99,6 +102,8 @@ public final class FileHotelStateRepository implements HotelStateRepository {
     private String toLine(Booking booking) {
         StringBuilder sb = new StringBuilder();
         sb.append(booking.roomNumber()).append(FIELD_DELIMITER);
+        sb.append(booking.checkInDate()).append(FIELD_DELIMITER);
+        sb.append(booking.checkOutDate()).append(FIELD_DELIMITER);
         List<String> guestFields = new ArrayList<>();
         for (Guest guest : booking.guests()) {
             requireSafe(guest.name(), "Guest name");
@@ -130,17 +135,19 @@ public final class FileHotelStateRepository implements HotelStateRepository {
             String[] fields = line.split(FIELD_DELIMITER_REGEX, -1);
             int roomNumber = Integer.parseInt(fields[0]);
             RoomType roomType = RoomType.forRoomNumber(roomNumber);
+            LocalDate checkInDate = LocalDate.parse(fields[1]);
+            LocalDate checkOutDate = LocalDate.parse(fields[2]);
 
             List<Guest> guests = new ArrayList<>();
             int guestFieldCount = roomType.occupancy();
             for (int i = 0; i < guestFieldCount; i++) {
-                String[] guestParts = fields[1 + i].split(GUEST_DELIMITER, -1);
+                String[] guestParts = fields[3 + i].split(GUEST_DELIMITER, -1);
                 guests.add(new Guest(guestParts[0], ContactNumber.of(guestParts[1]), guestParts[2]));
             }
 
-            Booking booking = new Booking(roomNumber, roomType, guests);
+            Booking booking = new Booking(roomNumber, roomType, guests, checkInDate, checkOutDate);
 
-            String foodField = fields[1 + guestFieldCount];
+            String foodField = fields[3 + guestFieldCount];
             if (!foodField.isBlank()) {
                 for (String item : foodField.split(LINE_ITEM_DELIMITER)) {
                     String[] itemParts = item.split(ITEM_QTY_DELIMITER);

@@ -12,6 +12,7 @@ import com.abhiram.hotel.exception.BookingNotFoundException;
 import com.abhiram.hotel.exception.InvalidFoodOrderException;
 import com.abhiram.hotel.repository.BookingRepository;
 import com.abhiram.hotel.repository.InMemoryBookingRepository;
+import com.abhiram.hotel.repository.InMemoryInvoiceHistoryRepository;
 import com.abhiram.hotel.repository.InMemoryRoomRepository;
 import com.abhiram.hotel.repository.RoomRepository;
 import java.util.List;
@@ -27,7 +28,8 @@ class FoodOrderServiceTest {
     void setUp() {
         RoomRepository roomRepository = new InMemoryRoomRepository();
         BookingRepository bookingRepository = new InMemoryBookingRepository();
-        bookingService = new BookingService(roomRepository, bookingRepository, new BillingService());
+        bookingService = new BookingService(roomRepository, bookingRepository, new BillingService(),
+                new InMemoryInvoiceHistoryRepository());
         foodOrderService = new FoodOrderService(bookingService);
     }
 
@@ -41,7 +43,7 @@ class FoodOrderServiceTest {
 
         foodOrderService.addFoodOrder(31, MenuItem.PASTA, 2);
 
-        Booking booking = bookingService.getActiveBooking(31);
+        Booking booking = bookingService.getInHouseBooking(31);
         assertEquals(1, booking.foodOrder().lines().size());
         assertEquals(Money.rupees(120), booking.foodOrder().total());
     }
@@ -83,7 +85,7 @@ class FoodOrderServiceTest {
         foodOrderService.addFoodOrder(31, MenuItem.SANDWICH, 1);
         foodOrderService.addFoodOrder(31, MenuItem.COKE, 2);
 
-        Booking booking = bookingService.getActiveBooking(31);
+        Booking booking = bookingService.getInHouseBooking(31);
         assertEquals(2, booking.foodOrder().lines().size());
         assertEquals(Money.rupees(50).add(Money.rupees(60)), booking.foodOrder().total());
     }
